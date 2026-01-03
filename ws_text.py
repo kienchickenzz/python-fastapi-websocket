@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 import asyncio
+import uuid
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,59 +13,131 @@ app = FastAPI(title="WebSocket API")
 # Lưu trữ các kết nối WebSocket đang active
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        # Lưu connection theo ID để truy xuất nhanh
+        self.active_connections: dict[str, WebSocket] = {}
+        # Lưu metadata nếu cần (user_id, session info, etc.)
+        self.connection_metadata: dict[str, dict] = {}
+        
         self.lock = asyncio.Lock()  # Để tránh race condition
 
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        async with self.lock:
-            self.active_connections.append(websocket)
-        print(f"New connection. Total connections: {len(self.active_connections)}")
 
-    async def disconnect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket) -> str:
+        """_summary_
+
+        Args:
+            websocket (WebSocket): _description_
+
+        Returns:
+            str: _description_
+        """
+        await websocket.accept()
+
+        connection_id = str(uuid.uuid4()) # Tạo ID duy nhất cho kết nối
+
         async with self.lock:
-            self.active_connections.remove(websocket)
+            self.active_connections[connection_id] = websocket
+            self.connection_metadata[connection_id] = {
+                'connected_at': asyncio.get_event_loop().time(),
+                'last_active': asyncio.get_event_loop().time()
+            }
+
+        print(f"New connection. Total connections: {len(self.active_connections)}")
+        return connection_id
+
+
+    async def disconnect(self, connection_id: str):
+        """_summary_
+
+        Args:
+            connection_id (str): _description_
+        """
+        async with self.lock:
+            if connection_id in self.active_connections:
+                del self.active_connections[connection_id]
+                del self.connection_metadata[connection_id]
+
         print(f"Connection closed. Total connections: {len(self.active_connections)}")
 
-    async def send_text(self, message: str, websocket: WebSocket):
-        await websocket.send_text(message)
+
+    def get_connection_by_id(self, connection_id: str) -> WebSocket | None:
+        """_summary_
+
+        Args:
+            connection_id (str): _description_
+
+        Returns:
+            WebSocket | None: _description_
+        """
+        return self.active_connections.get(connection_id, None)
+
+
+    async def send_text_to_client(self, message: str, connection_id: str):
+        """_summary_
+
+        Args:
+            message (str): _description_
+            connection_id (str): _description_
+
+        Raises:
+            ConnectionError: _description_
+        """
+        websocket = self.get_connection_by_id(connection_id)
+        if not websocket:
+            raise ConnectionError(f"Connection {connection_id} not found")
+        
+        if websocket:
+            await websocket.send_text(message)
+
 
     async def broadcast_text(self, message: str):
+        """_summary_
+
+        Args:
+            message (str): _description_
+        """
         async with self.lock:
             connections = self.active_connections.copy()
-        for connection in connections:
+        for connection in connections.values():
             try:
                 await connection.send_text(message)
             except:
                 pass
 
-    async def broadcast_text_except(self, message: str, exclude: WebSocket):
+
+    async def broadcast_text_except_self(self, message: str, exclude_id: str):
+        """_summary_
+
+        Args:
+            message (str): _description_
+            exclude_id (str): _description_
+        """
         async with self.lock:
             connections = self.active_connections.copy()
-        for connection in connections:
-            if connection != exclude:
+        for connection_id, connection in connections.items():
+            if connection_id != exclude_id:
                 try:
                     await connection.send_text(message)
                 except:
                     pass
 
+
 manager = ConnectionManager()
 
-# Endpoint WebSocket
+
 @app.websocket("/ws/text")
 async def websocket_text(websocket: WebSocket):
-    client_id = id(websocket)
-    await manager.connect(websocket)
+    """_summary_
+
+    Args:
+        websocket (WebSocket): _description_
+    """
+    conn_id = await manager.connect(websocket)
     
     try:
         # Gửi welcome message
-        await manager.send_text(
-            json.dumps({
-                "type": "system",
-                "message": f"Connected successfully! Your ID: {client_id}",
-                "timestamp": datetime.now().isoformat()
-            }),
-            websocket
+        await manager.send_text_to_client(
+            f"Connected successfully! Your ID: {conn_id}",
+            conn_id
         )
         
         # Broadcast khi có user mới kết nối
@@ -79,9 +152,32 @@ async def websocket_text(websocket: WebSocket):
         # Xử lý tin nhắn từ client
         while True:
             text = await websocket.receive_text()
-            await manager.broadcast_text_except(text, websocket)
+            await manager.broadcast_text_except_self(text, conn_id)
+    
     except WebSocketDisconnect:
-        await manager.disconnect(websocket)
+        await manager.disconnect(conn_id)
+
+
+@app.websocket("/ws/text/{target_client_id}")
+async def websocket_endpoint(websocket: WebSocket, target_client_id: str):
+    conn_id = await manager.connect(websocket)
+    
+    try:
+        # Gửi welcome message
+        await manager.send_text_to_client(
+            f"Connected successfully! Your ID: {conn_id}",
+            conn_id
+        )
+
+        # Xử lý tin nhắn từ client
+        while True:
+            data = await websocket.receive_text()
+            # Gửi tin nhắn đến client mục tiêu
+            await manager.send_text_to_client(data, target_client_id)
+    
+    except WebSocketDisconnect:
+        await manager.disconnect(conn_id)
+
 
 # Endpoint để test broadcast message từ server
 @app.post("/broadcast/text")

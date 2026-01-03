@@ -1,11 +1,12 @@
 import asyncio
 import sys
+import argparse
 
 import websockets
 from websockets.asyncio.client import ClientConnection
 
 
-URI = "ws://localhost:8001/ws/text"
+URL = "ws://localhost:8001/ws/text"
 
 async def websocket_client(uri: str):
     async with websockets.connect(uri) as websocket:
@@ -16,10 +17,12 @@ async def websocket_client(uri: str):
         
         # Chờ cả hai task hoàn thành
         await asyncio.gather(receive_task, send_task)
-            
+
+
 async def receive_messages(websocket):
     async for message in websocket:
         print(f"[Message] {message}")
+
 
 async def send_messages(websocket: ClientConnection):
     while True:
@@ -33,12 +36,21 @@ async def send_messages(websocket: ClientConnection):
         text = text.strip()
         if text:
             await websocket.send(text)
+             
                     
-def main():
+def main(url: str):
     try:
-        asyncio.run(websocket_client(URI))
+        asyncio.run(websocket_client(url))
     except Exception as e:
         print(f"Error: {e}")
 
 if __name__ == "__main__":
-    main()
+
+    parser = argparse.ArgumentParser("Websocket Client")
+
+    parser.add_argument("--target_client_id", type=str, required=True, help="ID của client mục tiêu để gửi tin nhắn")
+
+    options = parser.parse_args()
+
+    url = f"{URL}/{options.target_client_id}"
+    main(url)
