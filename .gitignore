@@ -1,0 +1,25 @@
+# Dependencies
+**/.venv
+uv.lock
+
+# Build
+**/__pycache__
+
+# Environments
+.env
+.env.dev
+
+# Docker
+**/volumes
+**/docker/logs
+**/docker/plugins
+**/docker/config
+
+# Vscode
+**/.vscode
+**/.mypy_cache
+
+# Images
+**/**.jpg
+**/**.png
+**/**.jpeg
